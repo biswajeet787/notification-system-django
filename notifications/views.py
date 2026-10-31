@@ -3,6 +3,7 @@ from django.conf import settings
 from django.http import JsonResponse
 
 from rest_framework import status, viewsets
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -27,6 +28,7 @@ def health_check(request):
 class TriggerViewSet(viewsets.ModelViewSet):
     queryset = Trigger.objects.prefetch_related("templates").all()
     serializer_class = TriggerSerializer
+    permission_classes = [IsAdminUser]
 
     @action(detail=True, methods=["post"])
     def fire(self, request, pk=None):
@@ -244,6 +246,7 @@ class NotificationTemplateViewSet(viewsets.ModelViewSet):
     ).all()
 
     serializer_class = NotificationTemplateSerializer
+    permission_classes = [IsAdminUser]
 
     @action(detail=True, methods=["post"])
     def test(self, request, pk=None):
@@ -346,13 +349,38 @@ class NotificationTemplateViewSet(viewsets.ModelViewSet):
 
 
 # Push Subscription ViewSet
+
 class PushSubscriptionViewSet(viewsets.ModelViewSet):
-    queryset = PushSubscription.objects.all()
     serializer_class = PushSubscriptionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        if self.request.user.is_staff:
+            return PushSubscription.objects.all()
+
+        return PushSubscription.objects.filter(
+            user_id=str(self.request.user.id)
+        )
+
+    def perform_create(self, serializer):
+        endpoint = serializer.validated_data["endpoint"]
+
+        subscription, created = PushSubscription.objects.update_or_create(
+            endpoint=endpoint,
+            defaults={
+                "user_id": str(self.request.user.id),
+                "p256dh": serializer.validated_data["p256dh"],
+                "auth": serializer.validated_data["auth"],
+                "is_active": serializer.validated_data.get(
+                    "is_active", True
+                ),
+            },
+        )
+
+        serializer.instance = subscription
 
     @action(detail=True, methods=["post"])
     def test(self, request, pk=None):
-
         subscription = self.get_object()
 
         subscription_info = {
@@ -364,7 +392,6 @@ class PushSubscriptionViewSet(viewsets.ModelViewSet):
         }
 
         try:
-
             from .services.web_push_service import (
                 send_web_push_notification
             )
@@ -381,12 +408,61 @@ class PushSubscriptionViewSet(viewsets.ModelViewSet):
             })
 
         except Exception as error:
-
             return Response({
                 "message": "Push notification failed.",
                 "error": str(error),
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    
+def perform_create(self, serializer):
+    endpoint = serializer.validated_data["endpoint"]
+
+    subscription, created = PushSubscription.objects.update_or_create(
+        endpoint=endpoint,
+        defaults={
+            "user_id": str(self.request.user.id),
+            "p256dh": serializer.validated_data["p256dh"],
+            "auth": serializer.validated_data["auth"],
+            "is_active": serializer.validated_data.get("is_active", True),
+        },
+    )
+
+    serializer.instance = subscription
+
+
+    @action(detail=True, methods=["post"])
+    def test(self, request, pk=None):
+        subscription = self.get_object()
+
+        subscription_info = {
+            "endpoint": subscription.endpoint,
+            "keys": {
+                "p256dh": subscription.p256dh,
+                "auth": subscription.auth,
+            },
+        }
+
+        try:
+            from .services.web_push_service import (
+                send_web_push_notification
+            )
+
+            result = send_web_push_notification(
+                subscription_info=subscription_info,
+                title="Notification Management System",
+                message="Your Web Push notification is working!",
+            )
+
+            return Response({
+                "message": "Push notification request accepted.",
+                "result": result,
+            })
+
+        except Exception as error:
+            return Response({
+                "message": "Push notification failed.",
+                "error": str(error),
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # VAPID Public Key
 def vapid_public_key(request):
